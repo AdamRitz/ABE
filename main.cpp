@@ -1,10 +1,9 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include "pbc.h"
 #include <ctime>
 #include <random>
-#include <pbc.h>
+#include <pbc/pbc.h>
 #include <windows.h>
 #include <wincrypt.h>
 #include <stdlib.h>
@@ -17,9 +16,21 @@
 #include <chrono>
 #include <NTL/mat_ZZ_p.h>
 #include <chrono>
+
+#include <cstring>
+#include <string>
+#include <cstdio>
+#include <vector>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <grpcpp/grpcpp.h>
+#include "Service.grpc.pb.h"
+#include "Tools.h"
 using namespace std;
 using namespace NTL;
 using namespace std::chrono;
+using namespace grpc;
+pairing_t pairing;
 // 基于 Windows CryptoAPI 的安全随机数生成：0 <= rop < upper
 void my_win_random(mpz_t rop, mpz_t upper, void *data) {
     (void)data;  // 不使用，可忽略
@@ -99,30 +110,33 @@ struct USK {
 
     }
 };
+// element_t 实际上是数组类型，无法直接赋值。
+// 所以需要先创建 CT 并且构造函数中初始化自己。Vector push 指针即可。
+// CT 内变量其实可以都改成指针类型，我还没有想好是否需要改。
 struct CT {
-    element_t C;
-    element_t CC;
-    vector<element_t*> Cs;
-    vector<element_t*> Ds;
-    CT(pairing_t pairings) {
-        element_init_GT(C,pairings);
-        element_init_G1(CC,pairings);
+    element_t C;                    // 128 字节
+    element_t CC;                   // 128 字节
+    vector<element_t*> Cs;          // 每个元素存储空间 128 字节
+    vector<element_t*> Ds;          // 每个元素存储空间 128 字节
+    CT() {
+        element_init_GT(C,pairing);
+        element_init_G1(CC,pairing);
     }
     ~CT() {
         element_clear(C);
         element_clear(CC);
-        for (int i=0; i<Cs.size(); i++) {
-            element_clear(*Cs[i]);
+        for (auto p : Cs) {
+            if (p) { element_clear(*p); free(p); }
         }
-        for (int i=0; i<Ds.size(); i++) {
-            element_clear(*Ds[i]);
+        for (auto p : Ds) {
+            if (p) { element_clear(*p); free(p); }
         }
     }
 };
 class CPABE {
 //  公共参数初始化
 public:
-    pairing_t pairing;
+
     element_t g;
     element_t ga;
     vector<element_t*> h;
@@ -130,6 +144,7 @@ public:
     element_t msk;
     element_t talpha;
     int u;
+    USK* PPusk;
 
 //  公共函数
 public:
@@ -216,19 +231,15 @@ public:
         RSK.attribute=attribute;
         return RSK;
     }
-    void GenMatrix() {
 
-    }
 
-    CT Encryt(element_t message,vector<vector<element_t*>> M, vector<int> Rho) {
+    CT Encryt(element_t message,CT ct    ,vector<vector<element_t *>> M,vector<int> Rho) {
         // 统计矩阵 M 的行列数 n x l;
         int l = M.size();
         int n = M[0].size();
         if (l!=Rho.size()) {
             cout<<"Rho Function Size Error!"<<endl;// 输入的 Rho 数组大小与 M 矩阵的行数不一致则报错。
         }
-        // 初始化密文结构体
-        CT ct=CT(pairing);
         // 生成随机向量 v = (s,y2,...,yn)
         vector<element_t*> v;
         element_t s;
@@ -440,7 +451,20 @@ public:
         element_add(c,c,d);
         cout<<element_cmp(a,c)<<endl;
     }
+    // 测试 Zr 元素的大小需要多少 Byte;
+    void test3() {
+        element_t a,c;
+        element_init_Zr(a,pairing);
+        element_init_GT(c,pairing);
+        element_random(c);
+        element_random(a);
+        long b=element_length_in_bytes(a);
+        cout<< "Zr Length: "<<b <<endl;
+        b=element_length_in_bytes(c);
+        cout<< "GT Length: "<<b <<endl;
+    }
 };
+CPABE abe;
 // 单一属性解密测试。
 void TestEnc() {
     CPABE abe;
@@ -451,18 +475,19 @@ void TestEnc() {
     USK usk = abe.GenKey(attributeVec);
     // 构造明文 message
     element_t message;
-    element_init_GT(message,abe.pairing);
+    element_init_GT(message,pairing);
     element_random(message);
     // 构造控制矩阵 M
     vector<vector<element_t*>> M;
     element_t *temp=(element_t*)malloc(sizeof(element_t));
-    element_init_Zr(*temp,abe.pairing);
+    element_init_Zr(*temp,pairing);
     element_set1(*temp);
     M.resize(1);
     M[0].push_back(temp);
     // 测试加密：对属性 0 进行加密。
     vector<int> Rho={0};
-    CT ct=abe.Encryt(message,M,Rho);
+    CT ct;
+    abe.Encryt(message,ct,M,Rho);
     // 解密
     element_t *a=abe.Decryt(ct,usk,M,Rho);
     cout << element_cmp(*a, message) << endl;
@@ -489,51 +514,52 @@ void TestEnc2() {
     USK usk3 = abe.GenKey(attributeVec3);
     // 构造明文 message
     element_t message;
-    element_init_GT(message,abe.pairing);
+    element_init_GT(message,pairing);
     element_random(message);
     // 构造控制矩阵 M
     vector<vector<element_t*>> M;
     element_t *temp=(element_t*)malloc(sizeof(element_t));
-    element_init_Zr(*temp,abe.pairing);
+    element_init_Zr(*temp,pairing);
 
     M.resize(4);
     element_set1(*temp);
     M[0].push_back(temp);
     temp=(element_t*)malloc(sizeof(element_t));
-    element_init_Zr(*temp,abe.pairing);
+    element_init_Zr(*temp,pairing);
     element_set0(*temp);
     M[0].push_back(temp);
 
     temp=(element_t*)malloc(sizeof(element_t));
-    element_init_Zr(*temp,abe.pairing);
+    element_init_Zr(*temp,pairing);
     M[1].push_back(temp);
     temp=(element_t*)malloc(sizeof(element_t));
-    element_init_Zr(*temp,abe.pairing);
+    element_init_Zr(*temp,pairing);
     element_set1(*temp);
     element_neg(*temp,*temp);
     M[1].push_back(temp);
 
     temp=(element_t*)malloc(sizeof(element_t));
-    element_init_Zr(*temp,abe.pairing);
+    element_init_Zr(*temp,pairing);
     element_set1(*temp);
     M[2].push_back(temp);
     temp=(element_t*)malloc(sizeof(element_t));
-    element_init_Zr(*temp,abe.pairing);
+    element_init_Zr(*temp,pairing);
     element_set0(*temp);
     M[2].push_back(temp);
 
     temp=(element_t*)malloc(sizeof(element_t));
-    element_init_Zr(*temp,abe.pairing);
+    element_init_Zr(*temp,pairing);
     M[3].push_back(temp);
     temp=(element_t*)malloc(sizeof(element_t));
-    element_init_Zr(*temp,abe.pairing);
+    element_init_Zr(*temp,pairing);
     element_set1(*temp);
     element_neg(*temp,*temp);
     M[3].push_back(temp);
     // 测试加密：对属性 0 进行加密。
     vector<int> Rho={0,3,1,3};
     auto t1=steady_clock::now();
-    CT ct=abe.Encryt(message,M,Rho);
+    CT ct;
+    ct=abe.Encryt(message,ct,M,Rho);
     auto t2=steady_clock::now();
     time1+=duration_cast<milliseconds>(t2-t1).count();
 
@@ -550,20 +576,313 @@ void TestEnc2() {
     element_t *a3=abe.Decryt(ct,usk3,M,Rho);
 
 }
-// 测试 G1 群元素加法和乘法一致性的主函数。和实现 ABE 无关。
-
-#include <chrono>
-using Clock = std::chrono::steady_clock;
 
 
 
+
+void TestLength() {
+    CPABE abe;
+    abe.setup(5);
+    abe.test3();
+}
 void TestADD() {
     CPABE abe;
     abe.setup(5);
     abe.test2();
 }
+
+
+// 输入：密钥，明文指针，明文长度，输出地址
+inline bool chacha20_encrypt(const uint8_t key32[32],const uint8_t* pt, size_t pt_len,vector<uint8_t>& out){
+    // 生成随机字节
+    constexpr size_t NONCE_LEN = 12;
+    uint8_t nonce[NONCE_LEN];
+    if (RAND_bytes(nonce, (int)NONCE_LEN) != 1) return false;
+
+    // 生成初始向量（counter + nonce）
+    uint8_t iv16[16] = {0};
+    iv16[0] = 1; // counter=1（小端）
+    memcpy(iv16 + 4, nonce, NONCE_LEN);
+
+    // 创建上下文
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return false;
+
+    // 填充 out
+    out.resize(NONCE_LEN + pt_len);
+    memcpy(out.data(), nonce, NONCE_LEN);
+    uint8_t* ct = out.data() + NONCE_LEN;
+
+    // 初始化上下文
+    int len = 0;
+    EVP_EncryptInit_ex(ctx, EVP_chacha20(), nullptr, key32, iv16);
+
+    // 真正的对称加密函数
+    //输入：
+    //      上下文ctx
+    //      密文地址 ct，
+    //      明文地址 pt，
+    //      明文长度 pt_len
+    EVP_EncryptUpdate(ctx, ct, &len, pt, (int)pt_len);
+
+    // 对于流密码 Final_ex 通常无用
+    // 对于块密码 Final_ex 通常用于填充
+    //输入：
+    //      上下文ctx
+    //      更改后的密文地址
+    //      长度 len 用于表示算法输出了多少密文
+    EVP_EncryptFinal_ex(ctx, ct + len, &len);
+
+    EVP_CIPHER_CTX_free(ctx);
+
+    return 1;
+}
+// 解密函数
+inline bool chacha20_decrypt(
+    const uint8_t key32[32],
+    const uint8_t* in, size_t in_len,
+    vector<uint8_t>& pt_out)
+{
+    constexpr size_t NONCE_LEN = 12;
+    if (in_len < NONCE_LEN) return false;
+
+    const uint8_t* nonce = in;
+    const uint8_t* ct = in + NONCE_LEN;
+    size_t ct_len = in_len - NONCE_LEN;
+
+    uint8_t iv16[16] = {0};
+    iv16[0] = 1; // counter=1
+    memcpy(iv16 + 4, nonce, NONCE_LEN);
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return false;
+
+    pt_out.resize(ct_len);
+    int len = 0;
+    bool ok =
+        EVP_DecryptInit_ex(ctx, EVP_chacha20(), nullptr, key32, iv16) == 1 &&
+        (ct_len == 0 || EVP_DecryptUpdate(ctx, pt_out.data(), &len, ct, (int)ct_len) == 1) &&
+        EVP_DecryptFinal_ex(ctx, pt_out.data() + len, &len) == 1;
+
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok) pt_out.clear();
+    return ok;
+}
+// 输出两个 Bytes
+// vector<uint8_t>: 对称加密的数据
+// CT Bytes: 非对称加密的数据
+vector<uint8_t> EncJSON(uint8_t* Data,int DataLen, vector<vector<element_t *>> M, vector<int> Rho) {
+    // 初始化对称密文向量，非对称密钥向量
+    vector<uint8_t> skct,point;
+    skct.resize(DataLen);
+    point.resize(128);
+    // 初始随机元素作为对称 Key
+    element_t t;
+    element_init_GT(t,pairing);
+    element_random(t);
+    // 对 t 进行非对称加密
+    CT ct;
+    abe.Encryt(t,ct,M,Rho);
+    // Key 只有 32 字节，所以对 128 字节的 GT 元素进行截断。
+    uint8_t key32[32];
+    memcpy(key32,point.data(),32);
+    // 加密
+    chacha20_encrypt(key32,Data,DataLen,skct);
+    return skct;
+
+}
+vector<uint8_t> DecJSON(CT ct,vector<uint8_t>d,vector<vector<element_t *>> M, vector<int> Rho) {
+    // 初始化明文，对称密钥
+    vector<uint8_t> pt;
+    element_t t;
+    element_init_GT(t,pairing);
+    auto keyGT = abe.Decryt(ct,*abe.PPusk,M,Rho);
+    unsigned char * keyBytes=new unsigned char[128];
+    element_to_bytes(keyBytes,*keyGT);
+    uint8_t key32[32];
+    memcpy(key32,keyBytes,32);
+    chacha20_decrypt(key32,d.data(),d.size(),pt);
+    return pt;
+}
+
+
+void SetPP() {
+
+}
+void SetSK() {
+
+}
+vector<vector<element_t *>> M;
+vector<int> Rho;
+class ProtoServiceImpl final : public ProtoStruct::ProtoService::Service {
+public:
+    // 大消息的传递尽量用指针，否则会存在问题。
+    Status Enc(ServerContext*,const ProtoStruct::Element* InElement,ProtoStruct::Element* OutElement) override {
+
+        // 这里做 Enc 的实际处理（示例：原样返回）
+        OutElement->set_point(InElement->point());
+        return Status::OK;
+    }
+    Status EncData(grpc::ServerContext* context,
+                   const ProtoStruct::Data* request,
+                   ProtoStruct::CT* response) override
+    {
+        (void)context;
+
+        // 1) 反序列化输入：这里假设 request->data() 存的是一个 GT 元素的 bytes
+        element_t t;
+        element_init_GT(t, pairing);
+
+
+
+        element_from_bytes(t, (unsigned char*)request->data().data());
+
+        // 2) 执行 ABE 加密
+        CT ct;
+        abe.Encryt(t, ct, M, Rho);
+
+        // 输入 t 已经用完
+        element_clear(t);
+
+        // 3) element_t -> std::string（protobuf bytes 就是 string）
+        auto elem_to_bytes = [](element_t e) -> std::string {
+            const size_t L = (size_t)element_length_in_bytes(e);
+            std::string out;
+            out.resize(L);
+            element_to_bytes((unsigned char*)&out[0], e);
+            return out;
+        };
+
+        // 4) 填充 response（字段名按你的 proto 改）
+        response->Clear();                // 清空旧字段（如果有）
+        response->set_c(elem_to_bytes(ct.C));
+        response->set_cc(elem_to_bytes(ct.CC));
+
+        // 如果 proto 里有 repeated bytes cs / ds
+        for (auto p : ct.Cs) {
+            response->add_cs(elem_to_bytes(*p));
+        }
+        for (auto p : ct.Ds) {
+            response->add_ds(elem_to_bytes(*p));
+        }
+
+        // 如果 proto 里有 repeated int32 rho（把本次策略也回传）
+        for (int x : Rho) {
+            response->add_rho(x);
+        }
+
+        return Status::OK;
+    }
+    grpc::Status DecData(grpc::ServerContext* context,
+                     const ProtoStruct::CT* request,
+                     ProtoStruct::Data* response) override
+{
+    (void)context;
+
+    // 1) 反序列化 CT（PBC）
+    CT ct;
+
+    // C / CC
+    element_from_bytes(ct.C,
+        reinterpret_cast<const unsigned char*>(request->c().data()));
+    element_from_bytes(ct.CC,
+        reinterpret_cast<const unsigned char*>(request->cc().data()));
+
+    // Cs
+    ct.Cs.reserve(request->cs_size());
+    for (int i = 0; i < request->cs_size(); ++i) {
+        const std::string& bi = request->cs(i);
+        auto* p = (element_t*)malloc(sizeof(element_t));
+        element_init_G1(*p, pairing);
+        element_from_bytes(*p, reinterpret_cast<const unsigned char*>(bi.data()));
+        ct.Cs.push_back(p);
+    }
+
+    // Ds
+    ct.Ds.reserve(request->ds_size());
+    for (int i = 0; i < request->ds_size(); ++i) {
+        const std::string& bi = request->ds(i);
+        auto* p = (element_t*)malloc(sizeof(element_t));
+        element_init_G1(*p, pairing);
+        element_from_bytes(*p, reinterpret_cast<const unsigned char*>(bi.data()));
+        ct.Ds.push_back(p);
+    }
+
+    // 2) rho：优先用 request 里的（如果没带就用全局 Rho）
+    std::vector<int> rho_local;
+    rho_local.reserve(request->rho_size());
+    for (int i = 0; i < request->rho_size(); ++i) rho_local.push_back(request->rho(i));
+    const std::vector<int>& rho_use = (!rho_local.empty()) ? rho_local : Rho;
+
+    // 3) skct：你的 proto 是 repeated bytes skct，所以拼成一个长 vector<uint8_t>
+    std::vector<uint8_t> skct;
+    {
+        size_t total = 0;
+        for (int i = 0; i < request->skct_size(); ++i) total += request->skct(i).size();
+        skct.reserve(total);
+
+        for (int i = 0; i < request->skct_size(); ++i) {
+            const std::string& chunk = request->skct(i);
+            skct.insert(skct.end(),
+                        reinterpret_cast<const uint8_t*>(chunk.data()),
+                        reinterpret_cast<const uint8_t*>(chunk.data()) + chunk.size());
+        }
+    }
+
+    // 4) 解密（用你现有的 DecJSON）
+    std::vector<uint8_t> pt = DecJSON(ct, skct, M, rho_use);
+
+    // 5) 写回 response（bytes 在 C++ 就是 string 装二进制）
+    response->Clear();
+    response->set_data(std::string(reinterpret_cast<const char*>(pt.data()), pt.size()));
+    return grpc::Status::OK;
+}
+
+
+
+    }
+};
 int main() {
+
+    //abe.setup(5);
     TestEnc2();
-    std::cout << "Hello, World!" << std::endl;
+    element_t ddd;
+    element_init_Zr(ddd,pairing);
+    cout<<element_length_in_bytes(ddd);
+    // uint8_t m[5]={0,1,2,3,4};
+    // ChainData2 msg;
+    // element_t t;
+    // element_init_GT(t,pairing);
+    // element_random(t);
+    // vector<uint8_t> pt;
+    // pt.resize(128);
+    // element_to_bytes(pt.data(),t);
+    //
+    // vector<uint8_t> data;
+    //
+    // for (int i=0;i<=msg.ByteSizeLong();i++) {
+    //     cout<<data[i]<<" ";
+    // }
+    // vector<uint8_t> ct=ChainDataSerialize(EncJSON(m,5));
+    // ChainData data=ChainDataDeserialize(ct);
+    // vector<uint8_t> s=DecJSON(data);
+    // for (int i=0;i<s.size();i++) {
+    //     cout<<int(s[i])<<endl;
+    // }
+
+
+
+    // struct MHD_Daemon* d = MHD_start_daemon(
+    //     MHD_USE_SELECT_INTERNALLY,
+    //     8380,
+    //     nullptr, nullptr,
+    //     &handler, nullptr,
+    //     MHD_OPTION_END);
+    //
+    // if (!d) return 1;
+    //
+    // std::puts("listening on http://127.0.0.1:8380");
+    // std::getchar();
+    // MHD_stop_daemon(d);
     return 0;
 }
