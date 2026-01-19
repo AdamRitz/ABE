@@ -1,0 +1,53 @@
+syntax = "proto3";
+package ProtoStruct;
+
+message Element {
+  bytes point=1;
+}
+message Row {
+  repeated bytes elems = 1;   // 一行 Zr 元素（每个是 element_to_bytes 的结果）
+}
+
+message CTMessage {
+  bytes C  = 1;               // GT: element_to_bytes
+  bytes CC = 2;               // G1: element_to_bytes
+
+  repeated bytes Cs = 3;      // vector<G1>
+  repeated bytes Ds = 4;      // vector<G1>
+
+  repeated Row M = 5;       // matrix<Zr> 按行存
+  repeated int32 rho = 6;     // vector<int>
+  bytes skct=7;
+}
+message AttributeMessage{
+  repeated bool attribute= 1;
+}
+message USKMessage{
+  bytes K = 1;
+  bytes L = 2;
+  repeated bytes sk = 3;
+  repeated bool  attribute = 4;
+}
+message PPMessage{
+  bytes g = 1 ; // generator
+  bytes ga = 2 ; // g^a
+  repeated  bytes h =3; // h1,h2,h3,...
+  bytes talpha = 4;
+  int32 u = 5;
+
+}
+message DataMessage{
+  bytes data=1;
+}
+message EmptyMessage{
+
+}
+service ProtoService {
+  rpc Enc(Element) returns (Element);
+  rpc EncData(DataMessage) returns (CTMessage);
+  rpc DecData(CTMessage) returns (DataMessage);
+  rpc GetPP(EmptyMessage) returns (PPMessage);
+  rpc GetUSK(AttributeMessage) returns (USKMessage);
+  rpc SetPP(PPMessage) returns (EmptyMessage);
+  rpc SetUSK(USKMessage) returns (EmptyMessage);
+}
