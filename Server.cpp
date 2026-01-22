@@ -25,7 +25,6 @@
 #include <openssl/rand.h>
 #include <grpcpp/grpcpp.h>
 #include "Service.grpc.pb.h"
-#include "Tools.h"
 using namespace std;
 using namespace NTL;
 using namespace std::chrono;
@@ -918,15 +917,30 @@ public:
 
     return grpc::Status::OK;
 }
+    // 函数名：Getpp
+    // 用途： 把公共参数编码为 Bytes 后发送至区块链。
+    // 输入：无 | 输出：PP 的字节数组
     Status GetPP(ServerContext *context, const ProtoStruct::EmptyMessage *request, ProtoStruct::PPMessage *response) override {
+        ProtoStruct::PPMessage pp;
+        pp.set_g(ElementBytesGet(abe.g));
+        pp.set_ga(ElementBytesGet(abe.ga));
+        pp.set_u(abe.u);
+        for (auto i : abe.h) {
+            pp.add_h(ElementBytesGet(*i));
+        }
+        return Status::OK;
 
     }
+    // 函数名：GetUSK
+    // 用途：生成私钥的字节串。
+    // 输入：一个代表属性的 bool 数组。 | 输出：私钥的字节码。
     Status GetUSK(ServerContext *context, const ProtoStruct::AttributeMessage *request, ProtoStruct::USKMessage *response) override {
         // 反序列化 v
         vector<bool> a;
         a.reserve(request->attribute_size());
         for (bool b:request->attribute()) {
             a.push_back(b);
+            response->add_attribute(b);
         }
         USK usk=abe.GenKey(a);
         response->set_k(ElementBytesGet(usk.K));
@@ -938,10 +952,27 @@ public:
             }
             response->add_sk(ElementBytesGet(*p));
         }
+
         return Status::OK;
     }
+    // 函数名：SetPP
+    // 用途：把 PP 的字节码转化为 abe 的公共参数。应该是 Go 从区块链上拿取该数据后，调用 C 的客户端即可。
     Status SetPP(ServerContext *context, const ProtoStruct::PPMessage *request, ProtoStruct::EmptyMessage *response) override {
-
+        cout<<"开始处理 SetPP"<<endl;
+        element_init_G1(abe.g,pairing);
+        element_init_G1(abe.ga,pairing);
+        element_from_bytes(abe.g,(unsigned char*)request->g().data());
+        element_from_bytes(abe.ga,(unsigned char*)request->ga().data());
+        abe.u=request->u();
+        cout<<"u 存放成功"<<endl;
+        for (int i = 0; i < request->h_size(); ++i) {
+            element_t* t;
+            element_init_G1(*t,pairing);
+            element_from_bytes(*t,(unsigned char*)request->h(i).data());
+            abe.h.push_back(t);
+        }
+        cout<<"SetPP 成功"<<endl;
+        return Status::OK;
     }
     Status SetUSK(ServerContext* context,
                   const ProtoStruct::USKMessage* request,

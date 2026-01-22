@@ -243,15 +243,89 @@ int TestGetSetKey() {
         ClientContext ctx1;
         Status s1 = stub->GetUSK(&ctx1, attributeMessage, &uskMessage);
         if (!s1.ok()) {
-            std::cerr << "EncData RPC failed: " << s1.error_message() << "\n";
+            std::cerr << "GetKey RPC failed: " << s1.error_message() << "\n";
             return 1;
         }
-        cout<<uskMessage.SerializeAsString()<<endl;
 
+        cout<<"Key Get Success!"<<endl;
         ClientContext ctx2;
-        Status s2 = stub->
+        ProtoStruct::EmptyMessage emptyMessage;
 
+        Status s2 = stub->SetUSK(&ctx2,uskMessage,&emptyMessage);
+
+    if (!s2.ok()) {
+        std::cerr << "SetKey RPC failed: " << s2.error_message() << "\n";
+        return 1;
+    }else {
+        cout<<"SetKey Success!"<<endl;
+    }
+    return 0;
+}
+void TestAll() {
+    auto stub = ClientInit();
+    vector<bool> attributeVec1={1,0,0,1,0};
+    ProtoStruct::AttributeMessage attributeMessage;
+    ProtoStruct::USKMessage uskMessage;
+    for (auto i:attributeVec1) {
+        attributeMessage.add_attribute(i);
+    }
+
+    ClientContext ctx1;
+    Status s1 = stub->GetUSK(&ctx1, attributeMessage, &uskMessage);
+    if (!s1.ok()) {
+        std::cerr << "GetKey RPC failed: " << s1.error_message() << "\n";
+        return ;
+    }
+
+    cout<<"Key Get Success!"<<endl;
+    ClientContext ctx2;
+    ProtoStruct::EmptyMessage emptyMessage;
+
+    Status s2 = stub->SetUSK(&ctx2,uskMessage,&emptyMessage);
+
+    if (!s2.ok()) {
+        std::cerr << "SetKey RPC failed: " << s2.error_message() << "\n";
+        return ;
+    }else {
+        cout<<"SetKey Success!"<<endl;
+    }
+
+    std::string a(256, 'A');                 // 256B，全是 0
+    // 或：std::string a(256, 'A');            // 256B，全是 'A'
+
+    ProtoStruct::DataMessage in;
+    in.set_data(a.data(), a.size());
+    long long time1=0;
+    auto t1=steady_clock::now();
+    ProtoStruct::CTMessage ct;
+    {
+        grpc::ClientContext ctx3;
+        grpc::Status s1 = stub->EncData(&ctx3, in, &ct);
+        if (!s1.ok()) {
+            std::cerr << "EncData RPC failed: " << s1.error_message() << "\n";
+            return ;
+        }
+    }
+    auto t2=steady_clock::now();
+    time1+=duration_cast<milliseconds>(t2-t1).count();
+    cout<< time1<<endl;
+    t1 = steady_clock::now();
+    ProtoStruct::DataMessage out;
+    {
+        grpc::ClientContext ctx4;
+        grpc::Status s2 = stub->DecData(&ctx4, ct, &out);
+        if (!s2.ok()) {
+            std::cerr << "DecData RPC failed: " << s2.error_message() << "\n";
+            return ;
+        }
+    }
+    t2=steady_clock::now();
+    time1+=duration_cast<milliseconds>(t2-t1).count();
+
+    cout<< time1<<endl;
+    cout<<out.data();
 }
 int main() {
-    TestGetSetKey();
+
+    TestAll();
 }
